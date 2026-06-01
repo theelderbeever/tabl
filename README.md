@@ -16,7 +16,11 @@ spreadsheet application.
 Requires a recent Rust toolchain (edition 2024, Rust 1.85 or newer).
 
 ```
-git clone <repo-url> tabl
+cargo install --git https://github.com/theelderbeever/tabl.git
+```
+
+```
+git clone https://github.com/theelderbeever/tabl.git tabl
 cd tabl
 cargo build --release
 ```
