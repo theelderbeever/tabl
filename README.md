@@ -75,7 +75,7 @@ column.
 | Key                 | Action                          |
 | ------------------- | ------------------------------- |
 | `h` `j` `k` `l` / arrows | Move the cursor            |
-| `g` / `G`           | First / last row                |
+| `gg` / `G`          | First / last row                |
 | `0` / `$`           | First / last column             |
 | PageUp / PageDown / Space | Page up / down            |
 | `i` or Enter        | Edit the selected cell          |
@@ -88,11 +88,11 @@ of editing.
 
 ### Editing cells (Insert mode)
 
-`i` or Enter begins editing the selected cell with an empty buffer; typing
-replaces the whole value. Enter commits, Esc cancels. The input is parsed
-according to the column's type (an integer column rejects non-numbers and keeps
-you in Insert mode with an error). An empty value commits as null, which is the
-way to clear a cell.
+`i` or Enter begins editing the selected cell, seeded with its current value and
+the caret at the end, so you amend rather than retype. Enter commits, Esc
+cancels. The input is parsed according to the column's type (an integer column
+rejects non-numbers and keeps you in Insert mode with an error). Clearing the
+buffer and committing sets the cell to null.
 
 ### Commands
 

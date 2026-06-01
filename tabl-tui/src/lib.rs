@@ -107,6 +107,52 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_u_clears_buffer_in_both_modes() {
+        let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        let sheet = load_sheet("tabl_tui_ctrlu.csv", "n\n7\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        // Command mode: type then clear, staying in Command mode.
+        event::handle_key(&mut app, press(KeyCode::Char(':')));
+        for ch in "filter x".chars() {
+            event::handle_key(&mut app, press(KeyCode::Char(ch)));
+        }
+        event::handle_key(&mut app, ctrl_u);
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(app.command, "");
+
+        event::handle_key(&mut app, press(KeyCode::Esc));
+
+        // Insert mode: buffer seeds with "7", Ctrl+U clears it, still editing.
+        event::handle_key(&mut app, press(KeyCode::Char('i')));
+        assert_eq!(app.edit, "7");
+        event::handle_key(&mut app, ctrl_u);
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.edit, "");
+    }
+
+    #[test]
+    fn gg_jumps_to_top_g_alone_is_a_prefix() {
+        let sheet = load_sheet("tabl_tui_gg.csv", "a\n0\n1\n2\n3\n");
+        let mut app = App::new(sheet, "test.csv".into());
+        app.page_rows = 10;
+        app.goto_bottom();
+        assert_eq!(app.viewport.sel_row, 3);
+
+        // `gg` returns to the top.
+        event::handle_key(&mut app, press(KeyCode::Char('g')));
+        assert_eq!(app.pending_key, Some('g'));
+        event::handle_key(&mut app, press(KeyCode::Char('g')));
+        assert_eq!(app.viewport.sel_row, 0);
+
+        // `g` then a motion is not a chord — the motion still happens.
+        event::handle_key(&mut app, press(KeyCode::Char('g')));
+        event::handle_key(&mut app, press(KeyCode::Char('j')));
+        assert_eq!(app.pending_key, None);
+        assert_eq!(app.viewport.sel_row, 1);
+    }
+
+    #[test]
     fn colon_number_jumps_to_row() {
         let sheet = load_sheet("tabl_tui_goto.csv", "a\n0\n1\n2\n3\n4\n");
         let mut app = App::new(sheet, "test.csv".into());
@@ -150,12 +196,10 @@ mod tests {
 
         event::handle_key(&mut app, press(KeyCode::Char('i')));
         assert_eq!(app.mode, Mode::Insert);
-        assert_eq!(
-            app.edit, "",
-            "buffer starts empty — typing replaces the cell"
-        );
+        assert_eq!(app.edit, "1", "buffer seeds with the current value");
 
-        // Type "42".
+        // Clear it and type "42".
+        event::handle_key(&mut app, press(KeyCode::Backspace));
         event::handle_key(&mut app, press(KeyCode::Char('4')));
         event::handle_key(&mut app, press(KeyCode::Char('2')));
         event::handle_key(&mut app, press(KeyCode::Enter));

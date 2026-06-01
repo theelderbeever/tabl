@@ -1,8 +1,13 @@
 //! Map terminal key events to state transitions on [`App`].
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, Mode};
+
+/// Whether `key` is Ctrl+`c`.
+fn is_ctrl(key: KeyEvent, c: char) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(c)
+}
 
 /// Handle one key press, dispatching on the current mode.
 pub fn handle_key(app: &mut App, key: KeyEvent) {
@@ -21,6 +26,7 @@ fn normal(app: &mut App, key: KeyEvent) {
         match (pending, c) {
             ('a', 'a') => return app.add_row(),
             ('d', 'd') => return app.delete_row(),
+            ('g', 'g') => return app.goto_top(),
             _ => {} // not a chord — fall through and handle `key` afresh
         }
     }
@@ -32,9 +38,10 @@ fn normal(app: &mut App, key: KeyEvent) {
         // Edit the selected cell — or start `:add` on the phantom column.
         KeyCode::Char('i') | KeyCode::Enter => app.activate(),
 
-        // Chord starters: `aa` adds a row, `dd` deletes one.
+        // Chord starters: `aa` adds a row, `dd` deletes one, `gg` jumps to top.
         KeyCode::Char('a') => app.pending_key = Some('a'),
         KeyCode::Char('d') => app.pending_key = Some('d'),
+        KeyCode::Char('g') => app.pending_key = Some('g'),
 
         KeyCode::Down | KeyCode::Char('j') => app.move_down(1),
         KeyCode::Up | KeyCode::Char('k') => app.move_up(1),
@@ -44,7 +51,7 @@ fn normal(app: &mut App, key: KeyEvent) {
         KeyCode::PageDown | KeyCode::Char(' ') => app.page_down(),
         KeyCode::PageUp => app.page_up(),
 
-        KeyCode::Char('g') | KeyCode::Home => app.goto_top(),
+        KeyCode::Home => app.goto_top(),
         KeyCode::Char('G') | KeyCode::End => app.goto_bottom(),
         KeyCode::Char('0') | KeyCode::Char('^') => app.goto_first_col(),
         KeyCode::Char('$') => app.goto_last_col(),
@@ -54,6 +61,9 @@ fn normal(app: &mut App, key: KeyEvent) {
 }
 
 fn command(app: &mut App, key: KeyEvent) {
+    if is_ctrl(key, 'u') {
+        return app.clear_command();
+    }
     match key.code {
         KeyCode::Enter => app.run_command(),
         KeyCode::Esc => app.cancel_command(),
@@ -64,6 +74,9 @@ fn command(app: &mut App, key: KeyEvent) {
 }
 
 fn insert(app: &mut App, key: KeyEvent) {
+    if is_ctrl(key, 'u') {
+        return app.clear_edit();
+    }
     match key.code {
         KeyCode::Enter => app.commit_edit(),
         KeyCode::Esc => app.cancel_edit(),

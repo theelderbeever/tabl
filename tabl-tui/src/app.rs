@@ -97,6 +97,11 @@ impl App {
         }
     }
 
+    /// Ctrl+U: clear the command buffer but stay in Command mode.
+    pub fn clear_command(&mut self) {
+        self.command.clear();
+    }
+
     /// Execute the buffered command and return to Normal mode.
     ///
     /// Supported: `:q`/`:quit`, `:w [path]`/`:write [path]`, `:wq [path]`,
@@ -352,16 +357,18 @@ impl App {
         }
     }
 
-    /// Start editing the selected cell. The buffer starts empty — typing
-    /// replaces the whole cell value rather than amending it. No-op on an empty
-    /// sheet.
+    /// Start editing the selected cell, seeding the buffer with its current
+    /// value so you amend rather than retype; the caret sits at the end.
+    /// No-op on an empty sheet or the phantom "append" column.
     pub fn begin_edit(&mut self) {
         let (rows, cols) = self.sheet.shape();
-        // Nothing to edit on an empty sheet or the phantom "append" column.
         if rows == 0 || cols == 0 || self.viewport.sel_col >= cols {
             return;
         }
-        self.edit.clear();
+        self.edit = self
+            .sheet
+            .cell(self.viewport.sel_row, self.viewport.sel_col)
+            .display();
         self.mode = Mode::Insert;
         self.message = None;
     }
@@ -373,6 +380,12 @@ impl App {
 
     pub fn backspace_edit(&mut self) {
         self.edit.pop();
+        self.message = None;
+    }
+
+    /// Ctrl+U: clear the edit buffer but stay in Insert mode.
+    pub fn clear_edit(&mut self) {
+        self.edit.clear();
         self.message = None;
     }
 
