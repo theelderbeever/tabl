@@ -107,6 +107,23 @@ mod tests {
     }
 
     #[test]
+    fn colon_number_jumps_to_row() {
+        let sheet = load_sheet("tabl_tui_goto.csv", "a\n0\n1\n2\n3\n4\n");
+        let mut app = App::new(sheet, "test.csv".into());
+        app.page_rows = 3;
+
+        run_cmd(&mut app, "3");
+        assert_eq!(app.viewport.sel_row, 3);
+
+        // Out of range clamps to the last row.
+        run_cmd(&mut app, "999");
+        assert_eq!(app.viewport.sel_row, 4);
+
+        run_cmd(&mut app, "0");
+        assert_eq!(app.viewport.sel_row, 0);
+    }
+
+    #[test]
     fn quit_is_gated_behind_colon_q() {
         let sheet = load_sheet("tabl_tui_quit.csv", "a\n1\n");
         let mut app = App::new(sheet, "test.csv".into());

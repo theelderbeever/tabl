@@ -100,6 +100,7 @@ Commands are entered after `:` and run on Enter. Esc cancels.
 
 | Command                     | Action                                                       |
 | --------------------------- | ------------------------------------------------------------ |
+| `:N`                        | Jump to row N (the gutter's 0-based number)                  |
 | `:q` / `:quit`              | Quit                                                         |
 | `:w [path]` / `:write [path]` | Save; with no path, write back to the opened file          |
 | `:wq [path]`                | Save then quit                                               |

@@ -114,6 +114,12 @@ impl App {
         };
         let args: Vec<&str> = rest.split_whitespace().collect();
 
+        // `:N` jumps to row N (the gutter's 0-based number), clamped to range.
+        if let Ok(row) = cmd.parse::<usize>() {
+            self.goto_row(row);
+            return;
+        }
+
         match cmd {
             "" => {}
             "q" | "quit" => self.quit(),
@@ -440,6 +446,16 @@ impl App {
             self.viewport.sel_row = rows - 1;
             self.follow_row();
         }
+    }
+
+    /// Jump to a specific row by its (0-based) number, clamped to range.
+    pub fn goto_row(&mut self, row: usize) {
+        let rows = self.rows();
+        if rows == 0 {
+            return;
+        }
+        self.viewport.sel_row = row.min(rows - 1);
+        self.follow_row();
     }
 
     pub fn goto_first_col(&mut self) {
