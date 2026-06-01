@@ -1,0 +1,16 @@
+[package]
+edition = "2024"
+name = "tabl-engine"
+version = "0.1.0"
+
+[dependencies]
+polars = { version = "0.53.0", default-features = false, features = [
+    "lazy",
+    "sql",
+    "describe",
+    "temporal",
+    "parquet",
+    "csv",
+    "json",
+] }
+tabl-core = { path = "../tabl-core" }

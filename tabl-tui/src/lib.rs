@@ -1,0 +1,512 @@
+//! Ratatui + crossterm front end. Talks to the engine through `Sheet` and
+//! renders `tabl-core` snapshots; never touches polars directly.
+
+pub mod app;
+pub mod event;
+pub mod ui;
+pub mod viewport;
+
+use std::path::PathBuf;
+
+use crossterm::event::{Event, KeyEventKind};
+use ratatui::DefaultTerminal;
+use tabl_core::{Error, Result};
+use tabl_engine::Sheet;
+
+use crate::app::App;
+
+fn io_err(e: std::io::Error) -> Error {
+    Error::Io(e.to_string())
+}
+
+/// Set up the terminal, run the event loop against `sheet`, and restore the
+/// terminal on exit. `ratatui::init` installs a panic hook that restores the
+/// terminal too, so a panic mid-loop won't leave the screen wedged.
+pub fn run(sheet: Sheet, source: PathBuf) -> Result<()> {
+    let mut terminal = ratatui::init();
+    let mut app = App::new(sheet, source);
+    let result = event_loop(&mut terminal, &mut app);
+    ratatui::restore();
+    result
+}
+
+fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
+    loop {
+        terminal
+            .draw(|frame| ui::draw(frame, app))
+            .map_err(io_err)?;
+        if app.should_quit {
+            break;
+        }
+        // Filter to key *presses* — some terminals also emit release/repeat.
+        if let Event::Key(key) = crossterm::event::read().map_err(io_err)?
+            && key.kind == KeyEventKind::Press
+        {
+            event::handle_key(app, key);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::Mode;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::io::Write;
+    use tabl_core::Value;
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn load_sheet(name: &str, contents: &str) -> Sheet {
+        let path = std::env::temp_dir().join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(f, "{contents}").unwrap();
+        let sheet = tabl_engine::io::load(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        sheet
+    }
+
+    fn buffer_text(terminal: &Terminal<TestBackend>, w: u16, h: u16) -> String {
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..h {
+            for x in 0..w {
+                if let Some(cell) = buf.cell((x, y)) {
+                    text.push_str(cell.symbol());
+                }
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn renders_header_cells_and_status() {
+        let sheet = load_sheet("tabl_tui_render.csv", "id,name\n1,alice\n2,bob\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+
+        let text = buffer_text(&terminal, 40, 6);
+        assert!(text.contains("name"), "header missing in:\n{text}");
+        assert!(text.contains("alice"), "cell missing in:\n{text}");
+        assert!(text.contains("NORMAL"), "status missing in:\n{text}");
+        // The dtype row renders under the column names.
+        assert!(text.contains("int"), "id dtype missing in:\n{text}");
+        assert!(text.contains("str"), "name dtype missing in:\n{text}");
+
+        // The renderer fed the visible dimensions back to the app: 2 real
+        // columns plus the trailing phantom "append" slot.
+        assert!(app.page_rows > 0);
+        assert_eq!(app.page_cols, 3);
+    }
+
+    #[test]
+    fn quit_is_gated_behind_colon_q() {
+        let sheet = load_sheet("tabl_tui_quit.csv", "a\n1\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        // Bare `q` no longer quits.
+        event::handle_key(&mut app, press(KeyCode::Char('q')));
+        assert!(!app.should_quit);
+
+        // `:` enters Command mode, `q` buffers, Enter executes.
+        event::handle_key(&mut app, press(KeyCode::Char(':')));
+        assert_eq!(app.mode, Mode::Command);
+        event::handle_key(&mut app, press(KeyCode::Char('q')));
+        assert_eq!(app.command, "q");
+        event::handle_key(&mut app, press(KeyCode::Enter));
+        assert!(app.should_quit);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn insert_commits_edit_to_overlay() {
+        // Single int column; selection starts at (0, 0).
+        let sheet = load_sheet("tabl_tui_edit.csv", "n\n1\n2\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        event::handle_key(&mut app, press(KeyCode::Char('i')));
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(
+            app.edit, "",
+            "buffer starts empty — typing replaces the cell"
+        );
+
+        // Type "42".
+        event::handle_key(&mut app, press(KeyCode::Char('4')));
+        event::handle_key(&mut app, press(KeyCode::Char('2')));
+        event::handle_key(&mut app, press(KeyCode::Enter));
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.sheet.view(0, 1).rows[0][0], Value::Int(42));
+    }
+
+    #[test]
+    fn insert_rejects_bad_value_and_stays_editing() {
+        let sheet = load_sheet("tabl_tui_bad.csv", "n\n1\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        event::handle_key(&mut app, press(KeyCode::Char('i')));
+        event::handle_key(&mut app, press(KeyCode::Backspace));
+        event::handle_key(&mut app, press(KeyCode::Char('x'))); // not an integer
+        event::handle_key(&mut app, press(KeyCode::Enter));
+
+        assert_eq!(app.mode, Mode::Insert, "stays in Insert on parse error");
+        assert!(app.message.is_some(), "surfaces an error message");
+        // The cell is untouched.
+        assert_eq!(app.sheet.view(0, 1).rows[0][0], Value::Int(1));
+
+        // Esc abandons the edit cleanly.
+        event::handle_key(&mut app, press(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.message.is_none());
+    }
+
+    #[test]
+    fn write_command_persists_edits_to_given_path() {
+        let sheet = load_sheet("tabl_tui_w_in.csv", "n\n1\n2\n");
+        let out = std::env::temp_dir().join("tabl_tui_w_out.csv");
+        let mut app = App::new(sheet, "ignored.csv".into());
+
+        // Edit (0, 0): 1 -> 9.
+        event::handle_key(&mut app, press(KeyCode::Char('i')));
+        event::handle_key(&mut app, press(KeyCode::Backspace));
+        event::handle_key(&mut app, press(KeyCode::Char('9')));
+        event::handle_key(&mut app, press(KeyCode::Enter));
+
+        // `:w <out>`
+        event::handle_key(&mut app, press(KeyCode::Char(':')));
+        for ch in format!("w {}", out.display()).chars() {
+            event::handle_key(&mut app, press(KeyCode::Char(ch)));
+        }
+        event::handle_key(&mut app, press(KeyCode::Enter));
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(
+            app.message.as_deref().unwrap_or("").contains("wrote"),
+            "expected a write confirmation, got {:?}",
+            app.message
+        );
+
+        // Reload the written file and confirm the edit landed on disk.
+        let reloaded = tabl_engine::io::load(&out).unwrap();
+        assert_eq!(reloaded.cell(0, 0), Value::Int(9));
+        let _ = std::fs::remove_file(&out);
+    }
+
+    fn run_cmd(app: &mut App, cmd: &str) {
+        event::handle_key(app, press(KeyCode::Char(':')));
+        for ch in cmd.chars() {
+            event::handle_key(app, press(KeyCode::Char(ch)));
+        }
+        event::handle_key(app, press(KeyCode::Enter));
+    }
+
+    #[test]
+    fn add_and_delete_columns_via_commands() {
+        let sheet = load_sheet("tabl_tui_cols.csv", "a,b\n1,x\n2,y\n");
+        let mut app = App::new(sheet, "test.csv".into());
+        // Cursor starts on column 0 ("a").
+
+        // `add` inserts left of the cursor; the new column becomes active.
+        run_cmd(&mut app, "add id int");
+        assert_eq!(app.sheet.shape(), (2, 3));
+        let meta = app.sheet.column_meta();
+        assert_eq!(meta[0].name, "id"); // took the cursor's slot
+        assert_eq!(meta[0].dtype, tabl_core::DType::Int);
+        assert_eq!(meta[1].name, "a"); // shifted right
+        assert_eq!(app.viewport.sel_col, 0, "selection follows the new column");
+
+        // Move onto "a" (now index 1) and add again; omitted dtype → str.
+        app.move_right();
+        assert_eq!(app.viewport.sel_col, 1);
+        run_cmd(&mut app, "add mid");
+        let meta = app.sheet.column_meta();
+        assert_eq!(meta[1].name, "mid");
+        assert_eq!(meta[1].dtype, tabl_core::DType::Str);
+        assert_eq!(meta[2].name, "a"); // shifted right again
+        assert_eq!(app.viewport.sel_col, 1);
+
+        // Delete by name.
+        run_cmd(&mut app, "delete b");
+        assert_eq!(app.sheet.shape(), (2, 3));
+        assert!(app.sheet.column_meta().iter().all(|c| c.name != "b"));
+
+        // Unknown dtype is reported, sheet unchanged.
+        let before = app.sheet.shape();
+        run_cmd(&mut app, "add oops notatype");
+        assert_eq!(app.sheet.shape(), before);
+        assert!(app.message.as_deref().unwrap().contains("unknown dtype"));
+    }
+
+    #[test]
+    fn delete_without_name_drops_active_column() {
+        let sheet = load_sheet("tabl_tui_delactive.csv", "a,b,c\n1,x,9\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        app.move_right(); // cursor on "b"
+        assert_eq!(app.viewport.sel_col, 1);
+
+        run_cmd(&mut app, "delete");
+        assert_eq!(app.sheet.shape(), (1, 2));
+        let names: Vec<_> = app
+            .sheet
+            .column_meta()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn add_at_end_via_phantom_column() {
+        let sheet = load_sheet("tabl_tui_phantom.csv", "a,b\n1,x\n2,y\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        // Navigate past the last real column onto the phantom slot.
+        app.move_right(); // -> b (1)
+        app.move_right(); // -> phantom (2)
+        assert_eq!(app.viewport.sel_col, 2);
+
+        // Adding here appends at the far right; the new column becomes active.
+        run_cmd(&mut app, "add z int");
+        assert_eq!(app.sheet.shape(), (2, 3));
+        let meta = app.sheet.column_meta();
+        assert_eq!(meta[2].name, "z");
+        assert_eq!(app.viewport.sel_col, 2, "selection lands on the new column");
+    }
+
+    #[test]
+    fn enter_on_phantom_opens_add_command() {
+        let sheet = load_sheet("tabl_tui_enter_phantom.csv", "a,b\n1,x\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        app.move_right(); // -> b
+        app.move_right(); // -> phantom
+        assert_eq!(app.viewport.sel_col, 2);
+
+        // Enter on the phantom drops into Command mode pre-filled with `add `.
+        event::handle_key(&mut app, press(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(app.command, "add ");
+
+        // Type the rest and run it.
+        for ch in "z int".chars() {
+            event::handle_key(&mut app, press(KeyCode::Char(ch)));
+        }
+        event::handle_key(&mut app, press(KeyCode::Enter));
+
+        assert_eq!(app.sheet.shape(), (1, 3));
+        assert_eq!(app.sheet.column_meta()[2].name, "z");
+    }
+
+    #[test]
+    fn null_cells_render_sentinel() {
+        let sheet = load_sheet("tabl_tui_null.csv", "a\n1\n2\n");
+        let mut app = App::new(sheet, "test.csv".into());
+        // A freshly added column is all-null.
+        run_cmd(&mut app, "add c int");
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+
+        let text = buffer_text(&terminal, 40, 8);
+        assert!(text.contains("<null>"), "null sentinel missing in:\n{text}");
+    }
+
+    #[test]
+    fn eval_adds_overwrites_and_reports_errors() {
+        let sheet = load_sheet("tabl_tui_eval.csv", "a,b\n1,10\n2,20\n");
+        let mut app = App::new(sheet, "test.csv".into());
+        // Cursor on column 0 ("a").
+
+        // New column computed from others, inserted at the cursor; selection
+        // follows onto it.
+        run_cmd(&mut app, "eval c = a * 2 + b");
+        assert_eq!(app.sheet.shape(), (2, 3));
+        let c = app
+            .sheet
+            .column_meta()
+            .iter()
+            .position(|m| m.name == "c")
+            .unwrap();
+        assert_eq!(
+            app.viewport.sel_col, c,
+            "selection follows the result column"
+        );
+        assert_eq!(app.sheet.cell(0, c), Value::Int(12)); // 1*2 + 10
+
+        // Overwriting an existing column keeps the shape.
+        run_cmd(&mut app, "eval a = a + 100");
+        assert_eq!(app.sheet.shape(), (2, 3));
+        let a = app
+            .sheet
+            .column_meta()
+            .iter()
+            .position(|m| m.name == "a")
+            .unwrap();
+        assert_eq!(app.sheet.cell(0, a), Value::Int(101));
+
+        // A malformed expression reports an error and leaves the sheet unchanged.
+        let before = app.sheet.shape();
+        run_cmd(&mut app, "eval bad = nope + 1");
+        assert_eq!(app.sheet.shape(), before);
+        assert!(app.message.is_some());
+
+        // Missing `=` is a usage error.
+        run_cmd(&mut app, "eval whoops");
+        assert!(app.message.as_deref().unwrap().contains("usage"));
+    }
+
+    #[test]
+    fn filter_is_a_toggleable_temporary_view() {
+        let sheet = load_sheet("tabl_tui_filter.csv", "a,b\n1,x\n2,y\n3,z\n4,w\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        // Filter to a > 2 → 2 rows; selection/scroll reset to top.
+        run_cmd(&mut app, "filter a > 2");
+        assert!(app.sheet.is_filtered());
+        assert_eq!(app.sheet.shape().0, 2);
+        assert_eq!(app.viewport.sel_row, 0);
+        assert_eq!(app.sheet.cell(0, 0), Value::Int(3)); // first matching row
+
+        // Re-filtering is evaluated against the full frame, never layered.
+        run_cmd(&mut app, "filter a > 1");
+        assert_eq!(app.sheet.shape().0, 3);
+
+        // Bare `:filter` clears it.
+        run_cmd(&mut app, "filter");
+        assert!(!app.sheet.is_filtered());
+        assert_eq!(app.sheet.shape().0, 4);
+    }
+
+    #[test]
+    fn write_while_filtered_saves_only_visible_rows() {
+        let sheet = load_sheet("tabl_tui_fw_in.csv", "a\n1\n2\n3\n4\n");
+        let out = std::env::temp_dir().join("tabl_tui_fw_out.csv");
+        let mut app = App::new(sheet, "ignored.csv".into());
+
+        run_cmd(&mut app, "filter a > 2");
+        run_cmd(&mut app, &format!("w {}", out.display()));
+
+        let reloaded = tabl_engine::io::load(&out).unwrap();
+        assert_eq!(reloaded.shape().0, 2, "only the filtered rows were written");
+        assert_eq!(reloaded.cell(0, 0), Value::Int(3));
+        assert_eq!(reloaded.cell(1, 0), Value::Int(4));
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn add_and_edit_a_date_column() {
+        let sheet = load_sheet("tabl_tui_date.csv", "a\n1\n2\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        // New date column at the cursor.
+        run_cmd(&mut app, "add when date");
+        let when = app
+            .sheet
+            .column_meta()
+            .iter()
+            .position(|c| c.name == "when")
+            .unwrap();
+        assert_eq!(app.sheet.column_meta()[when].dtype, tabl_core::DType::Date);
+
+        // Edit it by typing a date; it parses and renders back formatted.
+        app.viewport.sel_col = when;
+        event::handle_key(&mut app, press(KeyCode::Char('i')));
+        for ch in "2026-07-04".chars() {
+            event::handle_key(&mut app, press(KeyCode::Char(ch)));
+        }
+        event::handle_key(&mut app, press(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.sheet.cell(0, when).display(), "2026-07-04");
+
+        // A malformed date is rejected and keeps you editing.
+        event::handle_key(&mut app, press(KeyCode::Char('i')));
+        for ch in "nope".chars() {
+            event::handle_key(&mut app, press(KeyCode::Char(ch)));
+        }
+        event::handle_key(&mut app, press(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Insert);
+        assert!(app.message.is_some());
+    }
+
+    #[test]
+    fn rename_active_and_named_columns() {
+        let sheet = load_sheet("tabl_tui_rename.csv", "a,b\n1,2\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        // No-arg renames the active column (cursor on 0 = "a").
+        run_cmd(&mut app, "rename id");
+        assert_eq!(app.sheet.column_meta()[0].name, "id");
+
+        // Two-arg renames by name.
+        run_cmd(&mut app, "rename b value");
+        assert_eq!(app.sheet.column_meta()[1].name, "value");
+
+        // Renaming onto an existing name is rejected.
+        run_cmd(&mut app, "rename value id");
+        assert!(app.message.as_deref().unwrap().contains("already exists"));
+    }
+
+    #[test]
+    fn aa_adds_row_and_dd_deletes_it() {
+        let sheet = load_sheet("tabl_tui_rows.csv", "a\n1\n2\n3\n");
+        let mut app = App::new(sheet, "test.csv".into());
+        app.page_rows = 10;
+        // Cursor on row 0.
+
+        // `aa` inserts a null row below and moves onto it.
+        event::handle_key(&mut app, press(KeyCode::Char('a')));
+        event::handle_key(&mut app, press(KeyCode::Char('a')));
+        assert_eq!(app.sheet.shape(), (4, 1));
+        assert_eq!(app.viewport.sel_row, 1);
+        assert!(app.sheet.cell(1, 0).is_null());
+
+        // `dd` deletes the current (null) row, restoring the original.
+        event::handle_key(&mut app, press(KeyCode::Char('d')));
+        event::handle_key(&mut app, press(KeyCode::Char('d')));
+        assert_eq!(app.sheet.shape(), (3, 1));
+        assert_eq!(app.sheet.cell(1, 0), Value::Int(2));
+    }
+
+    #[test]
+    fn incomplete_chord_falls_through() {
+        let sheet = load_sheet("tabl_tui_chord.csv", "a\n1\n2\n");
+        let mut app = App::new(sheet, "test.csv".into());
+        app.page_rows = 10;
+
+        // `a` then `j`: not a chord — `j` moves down, no row added.
+        event::handle_key(&mut app, press(KeyCode::Char('a')));
+        assert_eq!(app.pending_key, Some('a'));
+        event::handle_key(&mut app, press(KeyCode::Char('j')));
+        assert_eq!(app.pending_key, None);
+        assert_eq!(app.sheet.shape(), (2, 1), "no row added");
+        assert_eq!(app.viewport.sel_row, 1, "moved down instead");
+    }
+
+    #[test]
+    fn navigation_clamps_to_bounds() {
+        let sheet = load_sheet("tabl_tui_nav.csv", "a\n1\n2\n3\n");
+        let mut app = App::new(sheet, "test.csv".into());
+        app.page_rows = 10;
+
+        app.move_up(5);
+        assert_eq!(app.viewport.sel_row, 0);
+
+        app.move_down(100);
+        assert_eq!(app.viewport.sel_row, 2, "should clamp to last row");
+
+        // One column → right moves onto the phantom slot (index 1), then stops.
+        app.move_right();
+        assert_eq!(app.viewport.sel_col, 1, "moves onto the phantom slot");
+        app.move_right();
+        assert_eq!(app.viewport.sel_col, 1, "can't go past the phantom slot");
+    }
+}

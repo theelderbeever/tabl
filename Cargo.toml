@@ -1,0 +1,19 @@
+[package]
+edition.workspace = true
+name = "tabl"
+version.workspace = true
+
+[workspace]
+members = ["tabl-core", "tabl-engine", "tabl-tui"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6.1", features = ["derive", "env"] }
+tabl-core = { path = "tabl-core" }
+tabl-engine = { path = "tabl-engine" }
+tabl-tui = { path = "tabl-tui" }
