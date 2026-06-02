@@ -28,6 +28,10 @@ pub struct App {
     /// In-progress text for the cell being edited in Insert mode.
     pub edit: String,
 
+    /// Caret position within `edit`, as a byte offset (always on a char
+    /// boundary). Inserts and the rendered caret land here; Left/Right move it.
+    pub edit_cursor: usize,
+
     /// Transient feedback shown in the status bar (e.g. a parse error).
     pub message: Option<String>,
 
@@ -54,6 +58,7 @@ impl App {
             should_quit: false,
             command: String::new(),
             edit: String::new(),
+            edit_cursor: 0,
             message: None,
             pending_key: None,
             page_rows: 0,
@@ -374,29 +379,78 @@ impl App {
             .sheet
             .cell(self.viewport.sel_row, self.viewport.sel_col)
             .display();
+        self.edit_cursor = self.edit.len();
         self.mode = Mode::Insert;
         self.message = None;
     }
 
     pub fn push_edit(&mut self, c: char) {
-        self.edit.push(c);
+        // Insert at the caret rather than the end so mid-string typing works;
+        // advance past the freshly inserted char (which may be multi-byte).
+        self.edit.insert(self.edit_cursor, c);
+        self.edit_cursor += c.len_utf8();
         self.message = None;
     }
 
     pub fn backspace_edit(&mut self) {
-        self.edit.pop();
+        // Delete the char *before* the caret, vim/readline-style. No-op at the
+        // start of the buffer.
+        if let Some(prev) = self.prev_edit_boundary() {
+            self.edit.remove(prev);
+            self.edit_cursor = prev;
+        }
         self.message = None;
+    }
+
+    /// Move the caret one char left, stopping at the start of the buffer.
+    pub fn move_edit_left(&mut self) {
+        if let Some(prev) = self.prev_edit_boundary() {
+            self.edit_cursor = prev;
+        }
+    }
+
+    /// Move the caret one char right, stopping at the end of the buffer.
+    pub fn move_edit_right(&mut self) {
+        if let Some(next) = self.next_edit_boundary() {
+            self.edit_cursor = next;
+        }
+    }
+
+    /// Byte offset of the char boundary just before the caret, or `None` at the
+    /// start. Used to step the caret left and to find the backspace target;
+    /// computed by walking chars so multi-byte UTF-8 stays intact.
+    fn prev_edit_boundary(&self) -> Option<usize> {
+        self.edit[..self.edit_cursor]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+    }
+
+    /// Byte offset of the char boundary just after the caret, or `None` at the
+    /// end.
+    fn next_edit_boundary(&self) -> Option<usize> {
+        self.edit[self.edit_cursor..]
+            .char_indices()
+            .nth(1)
+            .map(|(i, _)| self.edit_cursor + i)
+            .or(if self.edit_cursor < self.edit.len() {
+                Some(self.edit.len())
+            } else {
+                None
+            })
     }
 
     /// Ctrl+U: clear the edit buffer but stay in Insert mode.
     pub fn clear_edit(&mut self) {
         self.edit.clear();
+        self.edit_cursor = 0;
         self.message = None;
     }
 
     pub fn cancel_edit(&mut self) {
         self.mode = Mode::Normal;
         self.edit.clear();
+        self.edit_cursor = 0;
         self.message = None;
     }
 
@@ -413,6 +467,7 @@ impl App {
                 self.sheet.set_cell(row, col, value);
                 self.mode = Mode::Normal;
                 self.edit.clear();
+                self.edit_cursor = 0;
                 self.message = None;
             }
             Err(err) => self.message = Some(err),

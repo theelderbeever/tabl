@@ -20,9 +20,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // In Insert mode show the buffer and any parse error.
+    // In Insert mode show the buffer (caret at the cursor) and any parse error.
     if app.mode == Mode::Insert {
-        let mut text = format!(" INSERT   {}   (Enter commit · Esc cancel)", app.edit);
+        let (before, after) = app.edit.split_at(app.edit_cursor);
+        let mut text = format!(" INSERT   {before}▏{after}   (Enter commit · Esc cancel)");
         if let Some(msg) = &app.message {
             text.push_str(&format!("   ⚠ {msg}"));
         }

@@ -7,7 +7,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Rect},
+    layout::{Constraint, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Text},
     widgets::{Cell, HighlightSpacing, Row, Table, TableState},
@@ -56,14 +56,15 @@ fn column_color(col: usize) -> Color {
 /// and data-row band — so mouse clicks can be resolved to a cell. The number of
 /// rendered columns (the horizontal "page" size) is `geometry.cols.len()`.
 ///
-/// `editing`, when `Some`, is the in-progress text for the selected cell — shown
-/// in place of its stored value with a caret.
+/// `editing`, when `Some`, is the in-progress text for the selected cell and the
+/// caret's byte offset within it — shown in place of its stored value with a
+/// caret drawn at that offset.
 pub fn render(
     frame: &mut Frame,
     area: Rect,
     snap: &Snapshot,
     vp: &Viewport,
-    editing: Option<&str>,
+    editing: Option<(&str, usize)>,
 ) -> GridGeometry {
     let ncols = snap.columns.len();
     // One extra navigable slot past the real columns: the phantom "append" cell.
@@ -91,7 +92,10 @@ pub fn render(
                 w = w.max(cell_w);
             }
         }
-        w.clamp(1, MAX_COL_WIDTH) as u16
+        // One extra column past the longest value so the edit caret has room to
+        // sit *after* the last character — otherwise a full-width cell clamps the
+        // beam back onto the final char on entry. Still bounded by the 40 cap.
+        (w + 1).clamp(1, MAX_COL_WIDTH) as u16
     };
 
     // Left gutter shows the absolute row index, sized to the largest one.
@@ -163,8 +167,10 @@ pub fn render(
             let is_null = row.get(c).map(|v| v.is_null()).unwrap_or(true);
 
             let text = if editing_here {
-                // Show the live buffer with a caret while editing this cell.
-                format!("{}▏", editing.unwrap_or_default())
+                // Show the raw live buffer. The caret is drawn with the real
+                // terminal cursor (positioned below) rather than an inline glyph,
+                // so it overlays the character instead of shifting text right.
+                editing.map(|(buf, _)| buf.to_string()).unwrap_or_default()
             } else if is_null {
                 NULL_SENTINEL.to_string()
             } else {
@@ -229,12 +235,32 @@ pub fn render(
         cols.push(ColSpan { col: c, x, width });
         x += width + spacing;
     }
-    GridGeometry {
+    let geometry = GridGeometry {
         data_top: area.y + 2,
         rows: snap.rows.len(),
         row_offset: snap.row_offset,
         cols,
+    };
+
+    // Place the real terminal cursor at the caret while editing. The bar cursor
+    // (set in `run`) sits between characters without consuming a column, so text
+    // never shifts (an inline caret glyph did). The selected row is always on screen
+    // (page_rows == grid height - 2), and the selected column is windowed in by
+    // navigation, so both lookups normally succeed; bail quietly if not.
+    if let Some((buf, cursor)) = editing
+        && let Some(span) = geometry.cols.iter().find(|c| c.col == vp.sel_col)
+        && vp.sel_row >= snap.row_offset
+    {
+        // Caret offset in display columns ≈ chars before the cursor (good enough
+        // for the ASCII/numeric values cells usually hold). Clamp inside the
+        // column so it can't stray into a neighbor when the buffer overflows.
+        let offset = buf[..cursor].chars().count() as u16;
+        let x = (span.x + offset).min(span.x + span.width.saturating_sub(1));
+        let y = geometry.data_top + (vp.sel_row - snap.row_offset) as u16;
+        frame.set_cursor_position(Position { x, y });
     }
+
+    geometry
 }
 
 #[cfg(test)]
