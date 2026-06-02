@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tabl_core::{DType, Value};
 use tabl_engine::{Format, Sheet, io};
 
-use crate::viewport::Viewport;
+use crate::viewport::{GridGeometry, Viewport};
 
 /// Modal input, vim-style: navigate in Normal, type into a cell in Insert,
 /// enter `:`-style commands (save, convert, quit) in Command.
@@ -38,6 +38,10 @@ pub struct App {
     /// read back here to keep the selection on screen while scrolling.
     pub page_rows: usize,
     pub page_cols: usize,
+
+    /// Screen geometry of the last rendered grid, used to map a mouse click to
+    /// the cell under it. `None` until the first frame is drawn.
+    pub grid: Option<GridGeometry>,
 }
 
 impl App {
@@ -54,6 +58,7 @@ impl App {
             pending_key: None,
             page_rows: 0,
             page_cols: 0,
+            grid: None,
         }
     }
 
@@ -469,6 +474,22 @@ impl App {
         }
         self.viewport.sel_row = row.min(rows - 1);
         self.follow_row();
+    }
+
+    /// Move the selection to the cell under a mouse click at screen `(x, y)`.
+    /// A click that misses the data grid (the header, gutter, or empty padding)
+    /// is a no-op, so a stray click never jumps the cursor somewhere surprising.
+    pub fn click(&mut self, x: u16, y: u16) {
+        let Some((row, col)) = self.grid.as_ref().and_then(|g| g.hit(x, y)) else {
+            return;
+        };
+        self.viewport.sel_row = row;
+        self.viewport.sel_col = col;
+        // Clamp guards against a click landing on a row/column that the grid
+        // showed but the sheet has since shrunk past (e.g. between frames).
+        self.clamp_selection();
+        self.follow_row();
+        self.follow_col();
     }
 
     pub fn goto_first_col(&mut self) {

@@ -14,7 +14,7 @@ use ratatui::{
 };
 use tabl_core::Snapshot;
 
-use crate::viewport::Viewport;
+use crate::viewport::{ColSpan, GridGeometry, Viewport};
 
 /// Columns wider than this are truncated by ratatui's cell clipping.
 const MAX_COL_WIDTH: usize = 40;
@@ -52,7 +52,9 @@ fn column_color(col: usize) -> Color {
     PALETTE[col % PALETTE.len()]
 }
 
-/// Returns the number of columns rendered (the horizontal "page" size).
+/// Renders the grid and returns its screen [`GridGeometry`] — the column spans
+/// and data-row band — so mouse clicks can be resolved to a cell. The number of
+/// rendered columns (the horizontal "page" size) is `geometry.cols.len()`.
 ///
 /// `editing`, when `Some`, is the in-progress text for the selected cell — shown
 /// in place of its stored value with a caret.
@@ -62,7 +64,7 @@ pub fn render(
     snap: &Snapshot,
     vp: &Viewport,
     editing: Option<&str>,
-) -> usize {
+) -> GridGeometry {
     let ncols = snap.columns.len();
     // One extra navigable slot past the real columns: the phantom "append" cell.
     let phantom = ncols;
@@ -216,7 +218,23 @@ pub fn render(
     }
     frame.render_stateful_widget(table, area, &mut state);
 
-    visible
+    // Capture the screen geometry for mouse hit-testing. The gutter sits flush
+    // at the left edge; every column is then preceded by one cell of spacing,
+    // mirroring the constraint/`column_spacing` layout above. The header is two
+    // lines, so data rows start two below the table top.
+    let mut cols = Vec::with_capacity(visible);
+    let mut x = area.x + gutter + spacing;
+    for c in vp.col_offset..end {
+        let width = col_width(c);
+        cols.push(ColSpan { col: c, x, width });
+        x += width + spacing;
+    }
+    GridGeometry {
+        data_top: area.y + 2,
+        rows: snap.rows.len(),
+        row_offset: snap.row_offset,
+        cols,
+    }
 }
 
 #[cfg(test)]

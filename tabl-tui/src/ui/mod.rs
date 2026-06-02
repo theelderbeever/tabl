@@ -24,7 +24,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let snapshot = app.sheet.view(app.viewport.row_offset, app.page_rows);
     let editing = (app.mode == Mode::Insert).then_some(app.edit.as_str());
-    app.page_cols = table::render(frame, grid_area, &snapshot, &app.viewport, editing);
+    let geometry = table::render(frame, grid_area, &snapshot, &app.viewport, editing);
+    // Feed the rendered geometry back so navigation (selection-follows-view) and
+    // mouse hit-testing can read the column window the renderer just produced.
+    app.page_cols = geometry.cols.len();
+    app.grid = Some(geometry);
 
     status::render(frame, status_area, app);
 }

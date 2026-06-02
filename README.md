@@ -90,6 +90,10 @@ column.
 Pressing `i` or Enter on the trailing `+` column starts an `:add` command instead
 of editing.
 
+The mouse works too (in Normal mode): left-click a cell to move the cursor onto
+it, and scroll the wheel to move up and down the rows. While editing a cell or
+typing a command the mouse is ignored, so a stray click can't drop an edit.
+
 ### Editing cells (Insert mode)
 
 `i` or Enter begins editing the selected cell, seeded with its current value and
