@@ -55,7 +55,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     if app.sheet.is_filtered() {
         text.push_str(" [filtered] ");
     }
-    if let Some(pending) = app.pending_key {
+    if let Some(count) = app.count {
+        text.push_str(&format!(" {count}… "));
+    } else if let Some(pending) = app.pending_key {
         text.push_str(&format!(" {pending}… "));
     } else if let Some(msg) = &app.message {
         text.push_str(&format!(" {msg} "));

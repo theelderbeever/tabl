@@ -79,9 +79,12 @@ column.
 | Key                 | Action                          |
 | ------------------- | ------------------------------- |
 | `h` `j` `k` `l` / arrows | Move the cursor            |
+| `<count>` + motion  | Repeat the motion `count` times (e.g. `5j`, `10k`) |
 | `gg` / `G`          | First / last row                |
+| `<count>G`          | Jump to row `count` (0-based, like `:N`) |
 | `0` / `$`           | First / last column             |
 | PageUp / PageDown / Space | Page up / down            |
+| `Ctrl-d` / `Ctrl-u` | Half-page down / up             |
 | `i` or Enter        | Edit the selected cell          |
 | `aa`                | Insert a row below the cursor   |
 | `dd`                | Delete the current row          |
