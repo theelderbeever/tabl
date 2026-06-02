@@ -12,9 +12,10 @@ use crate::app::{App, Mode};
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let reversed = Style::default().add_modifier(Modifier::REVERSED);
 
-    // In Command mode the bar becomes the `:` input line, like vim.
+    // In Command mode the bar becomes the `:` input line, like vim, with a
+    // caret at the end of the buffer (where input always lands).
     if app.mode == Mode::Command {
-        let bar = Paragraph::new(format!(":{}", app.command));
+        let bar = Paragraph::new(format!(":{}▏", app.command));
         frame.render_widget(bar, area);
         return;
     }
