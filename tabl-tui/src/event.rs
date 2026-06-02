@@ -99,6 +99,8 @@ fn insert(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => app.commit_edit(),
         KeyCode::Esc => app.cancel_edit(),
         KeyCode::Backspace => app.backspace_edit(),
+        KeyCode::Left => app.move_edit_left(),
+        KeyCode::Right => app.move_edit_right(),
         KeyCode::Char(c) => app.push_edit(c),
         _ => {}
     }

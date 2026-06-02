@@ -9,6 +9,7 @@ pub mod viewport;
 use std::{io::stdout, path::PathBuf};
 
 use crossterm::{
+    cursor::SetCursorStyle,
     event::{DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
     execute,
 };
@@ -30,8 +31,14 @@ pub fn run(sheet: Sheet, source: PathBuf) -> Result<()> {
     // Mouse reporting isn't on by default; opt in so we can navigate by click.
     // It's an enhancement — if the terminal rejects it, carry on keyboard-only.
     let _ = execute!(stdout(), EnableMouseCapture);
+    // Use a bar cursor: when editing we point the real cursor at the caret, and a
+    // bar sits *between* characters (where the insertion point is) rather than
+    // covering the next one like a block would. Also an enhancement — ignored if
+    // the terminal doesn't support DECSCUSR.
+    let _ = execute!(stdout(), SetCursorStyle::SteadyBar);
     let mut app = App::new(sheet, source);
     let result = event_loop(&mut terminal, &mut app);
+    let _ = execute!(stdout(), SetCursorStyle::DefaultUserShape);
     let _ = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
     result
@@ -300,6 +307,38 @@ mod tests {
 
         assert_eq!(app.mode, Mode::Normal);
         assert_eq!(app.sheet.view(0, 1).rows[0][0], Value::Int(42));
+    }
+
+    #[test]
+    fn arrow_keys_move_caret_for_mid_string_edits() {
+        // String column so the buffer survives intact; selection at (0, 0).
+        let sheet = load_sheet("tabl_tui_caret.csv", "s\nfoo\nbar\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        event::handle_key(&mut app, press(KeyCode::Char('i')));
+        assert_eq!(app.edit, "foo");
+        assert_eq!(app.edit_cursor, 3, "caret seeds at the end");
+
+        // Left twice -> between 'f' and 'o'; insert there.
+        event::handle_key(&mut app, press(KeyCode::Left));
+        event::handle_key(&mut app, press(KeyCode::Left));
+        assert_eq!(app.edit_cursor, 1);
+        event::handle_key(&mut app, press(KeyCode::Char('X')));
+        assert_eq!(app.edit, "fXoo");
+        assert_eq!(app.edit_cursor, 2, "caret advances past the inserted char");
+
+        // Backspace deletes the char before the caret, not the last char.
+        event::handle_key(&mut app, press(KeyCode::Backspace));
+        assert_eq!(app.edit, "foo");
+        assert_eq!(app.edit_cursor, 1);
+
+        // Right past the end clamps; commit lands the buffer unchanged.
+        event::handle_key(&mut app, press(KeyCode::Right));
+        event::handle_key(&mut app, press(KeyCode::Right));
+        event::handle_key(&mut app, press(KeyCode::Right));
+        assert_eq!(app.edit_cursor, 3, "caret clamps at the end");
+        event::handle_key(&mut app, press(KeyCode::Enter));
+        assert_eq!(app.sheet.view(0, 1).rows[0][0], Value::Str("foo".into()));
     }
 
     #[test]
