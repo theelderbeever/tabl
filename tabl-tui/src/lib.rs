@@ -107,6 +107,91 @@ mod tests {
     }
 
     #[test]
+    fn crosshair_marks_current_row_and_column() {
+        use ratatui::style::{Color, Modifier};
+
+        let sheet = load_sheet("tabl_tui_crosshair.csv", "a,b,c\n0,1,2\n3,4,5\n6,7,8\n");
+        let mut app = App::new(sheet, "test.csv".into());
+        // Move the cursor off the origin so the crosshair has clear arms.
+        event::handle_key(&mut app, press(KeyCode::Char('j')));
+        event::handle_key(&mut app, press(KeyCode::Char('l')));
+        assert_eq!(app.viewport.sel_row, 1);
+        assert_eq!(app.viewport.sel_col, 1);
+
+        let (w, h) = (40u16, 8u16);
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let on_crosshair = |x: u16, y: u16| -> bool {
+            buf.cell((x, y))
+                .map(|c| c.style().bg == Some(ui::table::CROSSHAIR_BG))
+                .unwrap_or(false)
+        };
+        let reversed = |x: u16, y: u16| -> bool {
+            buf.cell((x, y))
+                .map(|c| c.style().add_modifier.contains(Modifier::REVERSED))
+                .unwrap_or(false)
+        };
+
+        // Every painted column of the table area falls into one of three buckets:
+        // the selected cell (reversed), a crosshair arm (tinted), or neither. We
+        // assert all three actually occur, which means the crosshair is drawn and
+        // the selected cell stays distinct from it.
+        let mut saw_selected = false;
+        let mut saw_crosshair = false;
+        let mut saw_plain = false;
+        for y in 0..h {
+            for x in 0..w {
+                let cell = buf.cell((x, y)).unwrap();
+                if cell.symbol() == " " && cell.style().bg.is_none() {
+                    continue; // unpainted background
+                }
+                if reversed(x, y) {
+                    saw_selected = true;
+                    // The selected cell must not also be tinted — it owns the
+                    // intersection with the stronger reversed highlight.
+                    assert!(
+                        cell.style().bg != Some(ui::table::CROSSHAIR_BG),
+                        "selected cell at ({x},{y}) should not carry the crosshair tint"
+                    );
+                } else if on_crosshair(x, y) {
+                    saw_crosshair = true;
+                } else {
+                    saw_plain = true;
+                }
+            }
+        }
+        assert!(saw_selected, "expected a reversed selected cell");
+        assert!(saw_crosshair, "expected crosshair-tinted cells");
+        assert!(saw_plain, "expected untinted cells off the crosshair");
+
+        // The row arm must be unbroken across column boundaries — the bug this
+        // fixes was the inter-column spacing showing through untinted, leaving
+        // the row arm segmented. Find the selected row by its reversed cell,
+        // then walk that whole line: every column must be tinted or reversed,
+        // with no plain gap in between.
+        let sel_y = (0..h)
+            .find(|&y| (0..w).any(|x| reversed(x, y)))
+            .expect("a reversed cell marks the selected row");
+        let first = (0..w).find(|&x| on_crosshair(x, sel_y) || reversed(x, sel_y));
+        let last = (0..w)
+            .rev()
+            .find(|&x| on_crosshair(x, sel_y) || reversed(x, sel_y));
+        let (first, last) = (first.unwrap(), last.unwrap());
+        for x in first..=last {
+            assert!(
+                on_crosshair(x, sel_y) || reversed(x, sel_y),
+                "gap in the row arm at ({x},{sel_y}): the column spacing was left untinted"
+            );
+        }
+
+        // Guard against the tint defaulting to the same value as no-color: the
+        // crosshair must be a real background distinct from the unset default.
+        assert_ne!(ui::table::CROSSHAIR_BG, Color::Reset);
+    }
+
+    #[test]
     fn ctrl_u_clears_buffer_in_both_modes() {
         let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
         let sheet = load_sheet("tabl_tui_ctrlu.csv", "n\n7\n");
