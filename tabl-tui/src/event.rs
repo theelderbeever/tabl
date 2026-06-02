@@ -1,6 +1,6 @@
 //! Map terminal key events to state transitions on [`App`].
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::app::{App, Mode};
 
@@ -15,6 +15,24 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         Mode::Normal => normal(app, key),
         Mode::Command => command(app, key),
         Mode::Insert => insert(app, key),
+    }
+}
+
+/// Handle one mouse event. Only acts in Normal mode: a left click jumps the
+/// cursor to the clicked cell and the wheel scrolls the selection, but while
+/// editing (Insert) or typing a command (Command) the mouse is ignored so a
+/// stray click can't silently discard an in-progress edit.
+pub fn handle_mouse(app: &mut App, ev: MouseEvent) {
+    if app.mode != Mode::Normal {
+        return;
+    }
+    match ev.kind {
+        MouseEventKind::Down(MouseButton::Left) => app.click(ev.column, ev.row),
+        // Wheel scroll nudges the selection; the view follows it. Three rows a
+        // tick is the usual terminal feel.
+        MouseEventKind::ScrollDown => app.move_down(3),
+        MouseEventKind::ScrollUp => app.move_up(3),
+        _ => {}
     }
 }
 

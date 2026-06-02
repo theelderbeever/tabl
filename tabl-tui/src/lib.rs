@@ -6,9 +6,12 @@ pub mod event;
 pub mod ui;
 pub mod viewport;
 
-use std::path::PathBuf;
+use std::{io::stdout, path::PathBuf};
 
-use crossterm::event::{Event, KeyEventKind};
+use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
+    execute,
+};
 use ratatui::DefaultTerminal;
 use tabl_core::{Error, Result};
 use tabl_engine::Sheet;
@@ -24,8 +27,12 @@ fn io_err(e: std::io::Error) -> Error {
 /// terminal too, so a panic mid-loop won't leave the screen wedged.
 pub fn run(sheet: Sheet, source: PathBuf) -> Result<()> {
     let mut terminal = ratatui::init();
+    // Mouse reporting isn't on by default; opt in so we can navigate by click.
+    // It's an enhancement — if the terminal rejects it, carry on keyboard-only.
+    let _ = execute!(stdout(), EnableMouseCapture);
     let mut app = App::new(sheet, source);
     let result = event_loop(&mut terminal, &mut app);
+    let _ = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -38,11 +45,11 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
         if app.should_quit {
             break;
         }
-        // Filter to key *presses* — some terminals also emit release/repeat.
-        if let Event::Key(key) = crossterm::event::read().map_err(io_err)?
-            && key.kind == KeyEventKind::Press
-        {
-            event::handle_key(app, key);
+        match crossterm::event::read().map_err(io_err)? {
+            // Filter to key *presses* — some terminals also emit release/repeat.
+            Event::Key(key) if key.kind == KeyEventKind::Press => event::handle_key(app, key),
+            Event::Mouse(m) => event::handle_mouse(app, m),
+            _ => {}
         }
     }
     Ok(())
@@ -52,7 +59,9 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
 mod tests {
     use super::*;
     use crate::app::Mode;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::{Terminal, backend::TestBackend};
     use std::io::Write;
     use tabl_core::Value;
@@ -635,6 +644,81 @@ mod tests {
         assert_eq!(app.pending_key, None);
         assert_eq!(app.sheet.shape(), (2, 1), "no row added");
         assert_eq!(app.viewport.sel_row, 1, "moved down instead");
+    }
+
+    fn left_click(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn left_click_moves_selection_to_the_clicked_cell() {
+        let sheet = load_sheet("tabl_tui_click.csv", "a,b,c\n0,1,2\n3,4,5\n6,7,8\n");
+        let mut app = App::new(sheet, "test.csv".into());
+
+        // Draw once so the renderer captures the grid geometry the click maps
+        // against. Layout at width 40: 1-wide gutter, then columns a/b/c each
+        // 3 wide ("int" dtype is the widest) separated by one space — a at x=2,
+        // b at x=6, c at x=10. Data rows begin at y=2 (below the 2-line header).
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+
+        // Click inside column b on the second data row.
+        event::handle_mouse(&mut app, left_click(7, 3));
+        assert_eq!(app.viewport.sel_row, 1);
+        assert_eq!(app.viewport.sel_col, 1);
+
+        // A click in the header band selects nothing — the cursor stays put.
+        event::handle_mouse(&mut app, left_click(7, 0));
+        assert_eq!(app.viewport.sel_row, 1);
+        assert_eq!(app.viewport.sel_col, 1);
+
+        // Nor does a click below the last data row (only 3 rows are present).
+        event::handle_mouse(&mut app, left_click(7, 6));
+        assert_eq!(app.viewport.sel_row, 1);
+        assert_eq!(app.viewport.sel_col, 1);
+    }
+
+    #[test]
+    fn mouse_is_ignored_outside_normal_mode() {
+        let sheet = load_sheet("tabl_tui_click_insert.csv", "a,b\n0,1\n2,3\n");
+        let mut app = App::new(sheet, "test.csv".into());
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+
+        // Begin editing, then click elsewhere: the edit must survive untouched.
+        event::handle_key(&mut app, press(KeyCode::Char('i')));
+        assert_eq!(app.mode, Mode::Insert);
+        event::handle_mouse(&mut app, left_click(7, 3));
+        assert_eq!(app.mode, Mode::Insert, "click must not exit Insert");
+        assert_eq!(app.viewport.sel_row, 0, "selection unchanged while editing");
+        assert_eq!(app.viewport.sel_col, 0);
+    }
+
+    #[test]
+    fn scroll_wheel_moves_the_selection() {
+        let sheet = load_sheet("tabl_tui_scroll.csv", "a\n0\n1\n2\n3\n4\n5\n6\n7\n8\n");
+        let mut app = App::new(sheet, "test.csv".into());
+        app.page_rows = 20; // room for every row, so the wheel just moves the cursor
+
+        event::handle_mouse(&mut app, scroll(MouseEventKind::ScrollDown));
+        assert_eq!(app.viewport.sel_row, 3, "scroll down nudges three rows");
+
+        event::handle_mouse(&mut app, scroll(MouseEventKind::ScrollUp));
+        assert_eq!(app.viewport.sel_row, 0);
+    }
+
+    fn scroll(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        }
     }
 
     #[test]
