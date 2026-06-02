@@ -38,6 +38,12 @@ pub struct App {
     /// First key of a pending two-key chord (e.g. `a` of `aa`), if any.
     pub pending_key: Option<char>,
 
+    /// In-progress numeric count prefix for a motion (e.g. `5` of `5j`), if any.
+    /// Accumulated digit-by-digit and consumed by the next motion. A leading
+    /// `0` is *not* a count — it stays the "first column" motion — so a count
+    /// only ever holds a value ≥ 1.
+    pub count: Option<usize>,
+
     /// Visible data rows / columns, refreshed by the renderer each frame and
     /// read back here to keep the selection on screen while scrolling.
     pub page_rows: usize,
@@ -61,6 +67,7 @@ impl App {
             edit_cursor: 0,
             message: None,
             pending_key: None,
+            count: None,
             page_rows: 0,
             page_cols: 0,
             grid: None,
@@ -489,14 +496,22 @@ impl App {
     }
 
     pub fn move_right(&mut self) {
-        // Allow one slot past the last column: the phantom "append" cell.
-        let cols = self.cols();
-        self.viewport.sel_col = (self.viewport.sel_col + 1).min(cols);
-        self.follow_col();
+        self.move_right_by(1);
     }
 
     pub fn move_left(&mut self) {
-        self.viewport.sel_col = self.viewport.sel_col.saturating_sub(1);
+        self.move_left_by(1);
+    }
+
+    pub fn move_right_by(&mut self, n: usize) {
+        // Allow one slot past the last column: the phantom "append" cell.
+        let cols = self.cols();
+        self.viewport.sel_col = (self.viewport.sel_col + n).min(cols);
+        self.follow_col();
+    }
+
+    pub fn move_left_by(&mut self, n: usize) {
+        self.viewport.sel_col = self.viewport.sel_col.saturating_sub(n);
         self.follow_col();
     }
 
@@ -506,6 +521,16 @@ impl App {
 
     pub fn page_up(&mut self) {
         self.move_up(self.page_rows.max(1));
+    }
+
+    /// Ctrl-d / Ctrl-u: scroll by half a page, the way vim does. Half of the
+    /// visible row count (at least one, so it always moves on a tiny window).
+    pub fn half_page_down(&mut self) {
+        self.move_down((self.page_rows / 2).max(1));
+    }
+
+    pub fn half_page_up(&mut self) {
+        self.move_up((self.page_rows / 2).max(1));
     }
 
     pub fn goto_top(&mut self) {

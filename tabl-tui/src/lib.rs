@@ -254,6 +254,103 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_d_ctrl_u_scroll_half_a_page() {
+        let body: String = (0..20).map(|i| format!("{i}\n")).collect();
+        let sheet = load_sheet("tabl_tui_halfpage.csv", &format!("a\n{body}"));
+        let mut app = App::new(sheet, "test.csv".into());
+        app.page_rows = 10; // half-page == 5
+
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+
+        event::handle_key(&mut app, ctrl_d);
+        assert_eq!(app.viewport.sel_row, 5);
+        event::handle_key(&mut app, ctrl_d);
+        assert_eq!(app.viewport.sel_row, 10);
+        event::handle_key(&mut app, ctrl_u);
+        assert_eq!(app.viewport.sel_row, 5);
+
+        // Ctrl-d in Normal mode must not be mistaken for the `d` chord starter.
+        assert_eq!(app.pending_key, None);
+
+        // Clamps at the bottom and top rather than running off the end.
+        for _ in 0..10 {
+            event::handle_key(&mut app, ctrl_d);
+        }
+        assert_eq!(app.viewport.sel_row, 19);
+        for _ in 0..10 {
+            event::handle_key(&mut app, ctrl_u);
+        }
+        assert_eq!(app.viewport.sel_row, 0);
+    }
+
+    #[test]
+    fn count_prefix_repeats_motions() {
+        let body: String = (0..30).map(|i| format!("{i}\n")).collect();
+        let sheet = load_sheet("tabl_tui_count.csv", &format!("a\n{body}"));
+        let mut app = App::new(sheet, "test.csv".into());
+        app.page_rows = 40; // keep everything on one page so nothing clamps early
+
+        // `5j` moves down five rows; the count shows in the bar while pending.
+        event::handle_key(&mut app, press(KeyCode::Char('5')));
+        assert_eq!(app.count, Some(5));
+        event::handle_key(&mut app, press(KeyCode::Char('j')));
+        assert_eq!(app.viewport.sel_row, 5);
+        assert_eq!(app.count, None); // consumed by the motion
+
+        // Multi-digit: `10k` moves up ten.
+        event::handle_key(&mut app, press(KeyCode::Char('1')));
+        event::handle_key(&mut app, press(KeyCode::Char('0')));
+        assert_eq!(app.count, Some(10));
+        event::handle_key(&mut app, press(KeyCode::Char('k')));
+        assert_eq!(app.viewport.sel_row, 0);
+
+        // Clamps at the bottom.
+        event::handle_key(&mut app, press(KeyCode::Char('9')));
+        event::handle_key(&mut app, press(KeyCode::Char('9')));
+        event::handle_key(&mut app, press(KeyCode::Char('j')));
+        assert_eq!(app.viewport.sel_row, 29);
+    }
+
+    #[test]
+    fn bare_zero_is_first_column_not_a_count() {
+        let sheet = load_sheet("tabl_tui_zero.csv", "a,b,c\n1,2,3\n");
+        let mut app = App::new(sheet, "test.csv".into());
+        app.page_cols = 10;
+
+        // Move off the first column, then a bare `0` jumps back to it.
+        event::handle_key(&mut app, press(KeyCode::Char('l')));
+        event::handle_key(&mut app, press(KeyCode::Char('l')));
+        assert_eq!(app.viewport.sel_col, 2);
+        event::handle_key(&mut app, press(KeyCode::Char('0')));
+        assert_eq!(app.viewport.sel_col, 0);
+        assert_eq!(app.count, None);
+
+        // But a `0` *after* a digit extends the count: `20j` would clamp to the
+        // last row — here it just confirms the `0` was absorbed, not a motion.
+        event::handle_key(&mut app, press(KeyCode::Char('2')));
+        event::handle_key(&mut app, press(KeyCode::Char('0')));
+        assert_eq!(app.count, Some(20));
+    }
+
+    #[test]
+    fn count_prefix_jumps_with_g() {
+        let body: String = (0..30).map(|i| format!("{i}\n")).collect();
+        let sheet = load_sheet("tabl_tui_countg.csv", &format!("a\n{body}"));
+        let mut app = App::new(sheet, "test.csv".into());
+        app.page_rows = 40;
+
+        // `7G` jumps to row 7 (0-based gutter index, matching `:N`).
+        event::handle_key(&mut app, press(KeyCode::Char('7')));
+        event::handle_key(&mut app, press(KeyCode::Char('G')));
+        assert_eq!(app.viewport.sel_row, 7);
+
+        // Bare `G` still jumps to the bottom.
+        event::handle_key(&mut app, press(KeyCode::Char('G')));
+        assert_eq!(app.viewport.sel_row, 29);
+    }
+
+    #[test]
     fn colon_number_jumps_to_row() {
         let sheet = load_sheet("tabl_tui_goto.csv", "a\n0\n1\n2\n3\n4\n");
         let mut app = App::new(sheet, "test.csv".into());
